@@ -71,13 +71,18 @@ export default function NovaAssistant({ item, initialMode = 'explain', onClose, 
         }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || data.detail || `AI request failed: ${response.status}`);
+      if (!response.ok) {
+        const detail = data.detail || data.error || `AI request failed: ${response.status}`;
+        const suffix = data.code ? ` [${data.code}]` : '';
+        throw new Error(`${detail}${suffix}`);
+      }
       setAnswer(data.answer || 'No answer returned.');
       const resultMeta = {
         model: data.model,
         cached: Boolean(data.cached),
         remaining: data.remaining,
         usage: data.usage || null,
+        api: data.api || null,
       };
       setMeta(resultMeta);
       onAIResult?.(requestMode, resultMeta);
@@ -168,6 +173,7 @@ export default function NovaAssistant({ item, initialMode = 'explain', onClose, 
             <p>{answer}</p>
             <div className="ai-answer-meta">
               <span>{meta?.model || 'AI model'}</span>
+              {meta?.api && <span>{meta.api}</span>}
               {Number.isFinite(meta?.remaining) && <span>{meta.remaining} AI requests left this hour</span>}
             </div>
           </div>
