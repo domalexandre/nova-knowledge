@@ -4,13 +4,21 @@
 
 NOVA is a mobile-first knowledge discovery product that turns research, technology and useful ideas into concise, understandable cards.
 
-## MVP 0.3 — Live Sources + Ask NOVA
+## MVP 0.4 — Accounts + Personalisation
 
 - Personalised **For You** feed
 - **Trending**, **Latest** and **Saved** views
-- Topic preferences stored locally
+- Topic preferences stored locally in guest mode and synced to Supabase when signed in
+- Behaviour-based ranking using saves, source opens, Explain and Ask NOVA activity
 - Search across ideas, topics, authors and sources
-- Save/bookmark persistence via localStorage
+- Saved-item snapshots persist even after the live feed refreshes
+- Guest data migration into a newly signed-in account
+- Supabase email/password authentication
+- Cross-device sync for interests and saved ideas
+- Cloud activity history for future recommendation improvements
+- AI usage tracking per signed-in account
+- Account-aware AI request limits when Supabase is configured; device/IP fallback otherwise
+- Row Level Security (RLS) policies so authenticated users can access only their own NOVA data
 - Daily Knowledge briefing surface
 - Responsive, iPhone-first interface
 - Live server-side ingestion from **arXiv**, **PubMed** and **Hacker News**
@@ -22,9 +30,26 @@ NOVA is a mobile-first knowledge discovery product that turns research, technolo
 - On-demand AI only: normal feed browsing does not trigger model calls
 - AI responses constrained to the source context supplied by the feed
 - 6-hour response cache for repeated AI requests
-- Basic per-client AI request guard of 15 requests per hour
 - Vercel AI Gateway with short-lived **OIDC** authentication; no long-lived AI secret is stored in the repository
 - Default AI model: `openai/gpt-6-luna`
+
+## Supabase setup
+
+The database schema and RLS policies live in:
+
+```text
+supabase/migrations/20261025_nova_accounts.sql
+```
+
+The app expects the public project URL and Supabase publishable key. See `.env.example` for the exact variable names. The publishable key is safe to use in browser code; RLS remains the authorization boundary.
+
+Tables used by the MVP:
+
+- `profiles`
+- `user_preferences`
+- `saved_items`
+- `user_activity`
+- `ai_usage`
 
 ## Data-source and AI notes
 
@@ -51,13 +76,12 @@ Local AI requests require either `AI_GATEWAY_API_KEY` or an environment that sup
 
 ## Next phases
 
-1. Supabase authentication and synced user profiles.
-2. Persistent server-side bookmarks, reading history and AI usage quotas.
-3. Behaviour-based interest ranking and a genuinely personalised **For You** feed.
-4. Add medRxiv and bioRxiv live sources.
-5. Daily personalised briefing and notifications.
-6. Pro subscription and Stripe billing.
-7. PWA/mobile installation and final production hardening.
+1. Activate the Supabase project, apply the included migration and add the public environment variables to Vercel.
+2. Add medRxiv and bioRxiv live sources.
+3. Create a stronger recommendation model from synced activity history.
+4. Daily personalised briefing and notifications.
+5. Pro subscription and Stripe billing.
+6. PWA/mobile installation and final production hardening.
 
 ## Credits
 
