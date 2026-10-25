@@ -5,9 +5,11 @@ import {
   BookmarkCheck,
   BrainCircuit,
   ChevronRight,
+  Clock3,
   Compass,
   Flame,
   Globe2,
+  Radio,
   Search,
   Sparkles,
   X,
@@ -28,7 +30,9 @@ const SEED = [
     why: 'More reliable self-correction could make AI assistants safer and more useful for complex, multi-step work.',
     expert: 'The core idea is iterative inference: introduce an evaluation or verifier stage between generation and final output. The useful research question is whether the evaluator adds genuine signal rather than simply reinforcing the generator’s original errors.',
     url: 'https://arxiv.org/',
+    publishedAt: '2026-10-24T08:00:00Z',
     score: 98,
+    live: false,
   },
   {
     id: 'nova-space-biosignatures',
@@ -40,7 +44,9 @@ const SEED = [
     why: 'It reduces false positives and helps future telescopes prioritise the most promising worlds.',
     expert: 'Modern biosignature assessment is a Bayesian-style evidence problem. Atmospheric disequilibrium, host-star spectra and geochemical context must be modelled jointly because abiotic processes can mimic individual biological markers.',
     url: 'https://arxiv.org/archive/astro-ph',
+    publishedAt: '2026-10-23T08:00:00Z',
     score: 93,
+    live: false,
   },
   {
     id: 'nova-health-sleep',
@@ -52,7 +58,9 @@ const SEED = [
     why: 'A regular routine may be a practical health target for people who cannot always increase total sleep duration.',
     expert: 'Sleep regularity metrics attempt to capture circadian consistency across days. Association studies need careful adjustment for work schedules, socioeconomic factors and baseline health before causal claims can be made.',
     url: 'https://pubmed.ncbi.nlm.nih.gov/',
+    publishedAt: '2026-10-22T08:00:00Z',
     score: 91,
+    live: false,
   },
   {
     id: 'nova-finance-behaviour',
@@ -64,7 +72,9 @@ const SEED = [
     why: 'Good financial systems can reduce the number of decisions required every month.',
     expert: 'The mechanism is consistent with default effects, present bias and bounded attention. Stronger evidence comes from interventions that compare opt-in versus automatic enrolment while controlling for income and liquidity constraints.',
     url: 'https://www.nber.org/',
+    publishedAt: '2026-10-21T08:00:00Z',
     score: 88,
+    live: false,
   },
   {
     id: 'nova-psych-learning',
@@ -76,7 +86,9 @@ const SEED = [
     why: 'It changes how you should structure learning for exams, languages and professional skills.',
     expert: 'The spacing effect is one of the most replicated findings in memory research. Retrieval difficulty and context variability are leading explanations, although optimal intervals depend on the desired retention period.',
     url: 'https://pubmed.ncbi.nlm.nih.gov/',
+    publishedAt: '2026-10-20T08:00:00Z',
     score: 87,
+    live: false,
   },
   {
     id: 'nova-tech-open-source',
@@ -88,7 +100,9 @@ const SEED = [
     why: 'It lowers the cost of testing AI products before committing to expensive infrastructure.',
     expert: 'The strategic trade-off is no longer simply open versus closed models. Teams increasingly optimise across latency, hosting cost, privacy, model quality, licensing constraints and operational complexity.',
     url: 'https://news.ycombinator.com/',
+    publishedAt: '2026-10-19T08:00:00Z',
     score: 95,
+    live: false,
   },
   {
     id: 'nova-business-experiments',
@@ -100,7 +114,9 @@ const SEED = [
     why: 'It protects cash and makes it easier to abandon weak ideas early.',
     expert: 'A useful experiment isolates the riskiest assumption and measures behavioural evidence rather than stated preference. Conversion, willingness to pay and repeated usage typically provide stronger signals than survey enthusiasm.',
     url: 'https://hbr.org/',
+    publishedAt: '2026-10-18T08:00:00Z',
     score: 90,
+    live: false,
   },
   {
     id: 'nova-science-materials',
@@ -112,7 +128,9 @@ const SEED = [
     why: 'Faster materials discovery could affect batteries, electronics, construction and clean energy.',
     expert: 'The challenge is distribution shift between simulated training data and real laboratory outcomes. High-value systems combine predictive models with active learning so experimental results continuously improve candidate selection.',
     url: 'https://arxiv.org/',
+    publishedAt: '2026-10-17T08:00:00Z',
     score: 92,
+    live: false,
   },
 ];
 
@@ -125,6 +143,13 @@ const readJSON = (key, fallback) => {
   }
 };
 
+const formatDate = (value) => {
+  if (!value) return 'Recent';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Recent';
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' }).format(date);
+};
+
 function App() {
   const [tab, setTab] = useState('For You');
   const [query, setQuery] = useState('');
@@ -133,30 +158,54 @@ function App() {
   const [explain, setExplain] = useState(null);
   const [level, setLevel] = useState('Simple');
   const [showTopics, setShowTopics] = useState(false);
+  const [feed, setFeed] = useState(SEED);
+  const [feedState, setFeedState] = useState({ loading: true, live: false, generatedAt: null, sourceErrors: [] });
 
   useEffect(() => localStorage.setItem('nova-topics', JSON.stringify(selectedTopics)), [selectedTopics]);
   useEffect(() => localStorage.setItem('nova-saved', JSON.stringify(saved)), [saved]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    const loadFeed = async () => {
+      try {
+        const response = await fetch('/api/feed', { signal: controller.signal });
+        if (!response.ok) throw new Error(`Feed request failed: ${response.status}`);
+        const data = await response.json();
+        if (Array.isArray(data.items) && data.items.length) {
+          setFeed(data.items);
+          setFeedState({ loading: false, live: true, generatedAt: data.generatedAt, sourceErrors: data.sourceErrors || [] });
+          return;
+        }
+        throw new Error('No live items returned');
+      } catch (error) {
+        if (error.name === 'AbortError') return;
+        setFeedState({ loading: false, live: false, generatedAt: null, sourceErrors: [error.message] });
+      }
+    };
+    loadFeed();
+    return () => controller.abort();
+  }, []);
+
   const items = useMemo(() => {
-    let next = [...SEED];
+    let next = [...feed];
     if (tab === 'For You') next.sort((a, b) => (selectedTopics.includes(b.topic) - selectedTopics.includes(a.topic)) || b.score - a.score);
-    if (tab === 'Trending') next.sort((a, b) => b.score - a.score);
-    if (tab === 'Latest') next = next.reverse();
+    if (tab === 'Trending') next.sort((a, b) => (b.score || 0) - (a.score || 0));
+    if (tab === 'Latest') next.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
     if (tab === 'Saved') next = next.filter((item) => saved.includes(item.id));
     if (query.trim()) {
       const q = query.toLowerCase();
-      next = next.filter((item) => `${item.title} ${item.summary} ${item.topic} ${item.source}`.toLowerCase().includes(q));
+      next = next.filter((item) => `${item.title} ${item.summary} ${item.topic} ${item.source} ${item.authors}`.toLowerCase().includes(q));
     }
     return next;
-  }, [tab, query, selectedTopics, saved]);
+  }, [tab, query, selectedTopics, saved, feed]);
 
   const toggleSave = (id) => setSaved((current) => current.includes(id) ? current.filter((x) => x !== id) : [...current, id]);
   const toggleTopic = (topic) => setSelectedTopics((current) => current.includes(topic) ? current.filter((x) => x !== topic) : [...current, topic]);
 
   const explanation = (item) => {
     if (level === 'Simple') return `${item.summary} In plain English: ${item.why}`;
-    if (level === 'Professional') return `${item.summary} The practical significance is that ${item.why.charAt(0).toLowerCase()}${item.why.slice(1)} This should still be treated as a research signal rather than a guaranteed real-world outcome.`;
-    return item.expert;
+    if (level === 'Professional') return `${item.summary} The practical significance is that ${item.why.charAt(0).toLowerCase()}${item.why.slice(1)} This should still be treated as a signal to investigate rather than a guaranteed real-world outcome.`;
+    return item.expert || `${item.summary} Review the original source, methodology and limitations before relying on the claim.`;
   };
 
   return (
@@ -181,13 +230,16 @@ function App() {
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search ideas, topics or sources" />
             {query && <button onClick={() => setQuery('')}><X size={16} /></button>}
           </div>
+          <div className={`feed-status ${feedState.live ? 'live' : ''}`}>
+            {feedState.loading ? <><span className="status-pulse" /> Connecting to live sources…</> : feedState.live ? <><Radio size={13} /> LIVE · arXiv · PubMed · Hacker News</> : <><Clock3 size={13} /> Demo fallback · live sources temporarily unavailable</>}
+          </div>
         </section>
 
         <section className="briefing">
           <div>
             <span className="briefing-label">DAILY KNOWLEDGE</span>
             <h2>Your 5-minute briefing</h2>
-            <p>{SEED.length} ideas selected across science, AI, business and more.</p>
+            <p>{feed.length} {feedState.live ? 'live' : 'curated'} ideas across science, AI, technology and more.</p>
           </div>
           <div className="briefing-icon"><BrainCircuit /></div>
         </section>
@@ -205,13 +257,16 @@ function App() {
             <div className="empty-state">
               <Bookmark size={28} />
               <h3>Nothing here yet</h3>
-              <p>{tab === 'Saved' ? 'Save an idea and it will appear here.' : 'Try another search.'}</p>
+              <p>{tab === 'Saved' ? 'Save an idea and it will appear here while it remains in your active feed.' : 'Try another search.'}</p>
             </div>
           ) : items.map((item, index) => (
             <article className="knowledge-card" key={item.id}>
               <div className="card-topline">
                 <span className="topic-pill">{item.topic}</span>
-                <span className="source"><Globe2 size={13} /> {item.source}</span>
+                <div className="source-stack">
+                  <span className="source"><Globe2 size={13} /> {item.source}</span>
+                  <span className="source-date">{formatDate(item.publishedAt)}</span>
+                </div>
               </div>
               <div className="card-index">{String(index + 1).padStart(2, '0')}</div>
               <h2>{item.title}</h2>
@@ -227,7 +282,7 @@ function App() {
                 <button className="icon-action" onClick={() => toggleSave(item.id)} aria-label="Save">
                   {saved.includes(item.id) ? <BookmarkCheck size={19} /> : <Bookmark size={19} />}
                 </button>
-                <a className="read-link" href={item.url} target="_blank" rel="noreferrer">Read source <ChevronRight size={16} /></a>
+                <a className="read-link" href={item.url} target="_blank" rel="noreferrer">Read original <ChevronRight size={16} /></a>
               </div>
             </article>
           ))}
@@ -235,7 +290,10 @@ function App() {
       </main>
 
       <footer>
-        <span>NOVA · MVP 0.1</span>
+        <div>
+          <span>NOVA · MVP 0.2 · Live sources</span>
+          <span className="legal-note">PubMed/NCBI content is informational and not medical advice. Copyright may remain with publishers or authors.</span>
+        </div>
         <span>Discover. Understand. Build.</span>
       </footer>
 
@@ -260,11 +318,12 @@ function App() {
             <button className="modal-close" onClick={() => setExplain(null)}><X /></button>
             <span className="eyebrow"><Sparkles size={14} /> NOVA EXPLAIN</span>
             <h2>{explain.title}</h2>
+            <p className="modal-source">{explain.source} · {explain.authors} · {formatDate(explain.publishedAt)}</p>
             <div className="level-tabs">
               {['Simple', 'Professional', 'Expert'].map((name) => <button key={name} onClick={() => setLevel(name)} className={level === name ? 'selected' : ''}>{name}</button>)}
             </div>
             <div className="explanation-text">{explanation(explain)}</div>
-            <p className="disclaimer">MVP explanation generated locally from source metadata. AI-powered analysis will replace this layer in a later phase.</p>
+            <p className="disclaimer">NOVA currently explains source metadata and abstracts locally. It does not replace the original paper, peer review, professional advice or source verification. On-demand AI analysis is the next phase.</p>
           </div>
         </div>
       )}
