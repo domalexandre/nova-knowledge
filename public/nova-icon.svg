@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">NOVA Knowledge</title>
+  <desc id="desc">NOVA star mark on a dark background.</desc>
+  <defs>
+    <linearGradient id="g" x1="80" y1="70" x2="430" y2="440" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9f7aea"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+    <radialGradient id="bg" cx="50%" cy="38%" r="75%">
+      <stop stop-color="#172033"/>
+      <stop offset="1" stop-color="#080b12"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="151" fill="none" stroke="url(#g)" stroke-width="10" opacity=".45"/>
+  <path d="M256 96l30.5 105.5L392 232l-105.5 30.5L256 368l-30.5-105.5L120 232l105.5-30.5L256 96Z" fill="url(#g)"/>
+  <circle cx="256" cy="232" r="31" fill="#f8fafc" opacity=".94"/>
+</svg>
