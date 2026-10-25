@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, BrainCircuit, LoaderCircle, MessageCircle, Send, Sparkles, X } from 'lucide-react';
 import './ai.css';
+import { supabase } from './supabase.js';
 
 const LEVELS = ['Simple', 'Professional', 'Expert'];
 
@@ -13,7 +14,7 @@ function localExplanation(item, level) {
   return item.expert || `${item.summary} Review the original source, methodology, evidence quality and limitations before relying on the claim.`;
 }
 
-export default function NovaAssistant({ item, initialMode = 'explain', onClose }) {
+export default function NovaAssistant({ item, initialMode = 'explain', onClose, onAIResult }) {
   const [mode, setMode] = useState(initialMode);
   const [level, setLevel] = useState('Simple');
   const [question, setQuestion] = useState('');
@@ -50,9 +51,18 @@ export default function NovaAssistant({ item, initialMode = 'explain', onClose }
     setMeta(null);
 
     try {
+      let accessToken = '';
+      if (supabase) {
+        const { data } = await supabase.auth.getSession();
+        accessToken = data?.session?.access_token || '';
+      }
+
       const response = await fetch('/api/ask', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({
           mode: requestMode,
           level,
@@ -63,7 +73,14 @@ export default function NovaAssistant({ item, initialMode = 'explain', onClose }
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || data.detail || `AI request failed: ${response.status}`);
       setAnswer(data.answer || 'No answer returned.');
-      setMeta({ model: data.model, cached: Boolean(data.cached), remaining: data.remaining });
+      const resultMeta = {
+        model: data.model,
+        cached: Boolean(data.cached),
+        remaining: data.remaining,
+        usage: data.usage || null,
+      };
+      setMeta(resultMeta);
+      onAIResult?.(requestMode, resultMeta);
     } catch (requestError) {
       setError(requestError.message || 'NOVA AI could not answer right now.');
     } finally {
