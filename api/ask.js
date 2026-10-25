@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
+import { createClient } from '@supabase/supabase-js';
 
 const MODEL = process.env.NOVA_AI_MODEL || 'openai/gpt-6-luna';
 const GATEWAY_URL = 'https://ai-gateway.vercel.sh/v1/responses';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const RATE_WINDOW_MS = 60 * 60 * 1000;
 const RATE_LIMIT = 15;
+
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
 const responseCache = globalThis.__novaAiCache || new Map();
 const rateBuckets = globalThis.__novaAiRateBuckets || new Map();
@@ -34,15 +38,35 @@ function cacheKey(payload) {
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
-function getClientId(req) {
+function getIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
   const ip = Array.isArray(forwarded) ? forwarded[0] : String(forwarded || '').split(',')[0];
   return clean(ip || req.socket?.remoteAddress || 'unknown', 120);
 }
 
-function checkRateLimit(req) {
+async function resolveIdentity(req) {
+  const authorization = clean(req.headers.authorization || '', 3000);
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
+
+  if (token && SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY) {
+    try {
+      const authClient = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+        auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+      });
+      const { data, error } = await authClient.auth.getUser(token);
+      if (!error && data?.user?.id) {
+        return { clientId: `user:${data.user.id}`, scope: 'account' };
+      }
+    } catch {
+      // Invalid or temporarily unverifiable account tokens fall back to device/IP limits.
+    }
+  }
+
+  return { clientId: `ip:${getIp(req)}`, scope: 'device' };
+}
+
+function checkRateLimit(clientId) {
   const now = Date.now();
-  const clientId = getClientId(req);
   const current = rateBuckets.get(clientId);
   if (!current || now - current.startedAt > RATE_WINDOW_MS) {
     rateBuckets.set(clientId, { startedAt: now, count: 1 });
@@ -117,8 +141,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const rate = checkRateLimit(req);
+  const identity = await resolveIdentity(req);
+  const rate = checkRateLimit(identity.clientId);
   res.setHeader('X-NOVA-AI-Remaining', String(rate.remaining));
+  res.setHeader('X-NOVA-AI-Scope', identity.scope);
   if (!rate.ok) {
     return res.status(429).json({ error: 'AI request limit reached. Try again later.', code: 'RATE_LIMITED' });
   }
@@ -138,7 +164,7 @@ export default async function handler(req, res) {
   const key = cacheKey({ mode, level, question: question.toLowerCase(), item });
   const cached = responseCache.get(key);
   if (cached && Date.now() - cached.createdAt < CACHE_TTL_MS) {
-    return res.status(200).json({ ...cached.payload, cached: true, remaining: rate.remaining });
+    return res.status(200).json({ ...cached.payload, cached: true, remaining: rate.remaining, rateScope: identity.scope });
   }
 
   const authToken = process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN;
@@ -185,6 +211,7 @@ export default async function handler(req, res) {
       } : null,
       cached: false,
       remaining: rate.remaining,
+      rateScope: identity.scope,
     };
 
     responseCache.set(key, { createdAt: Date.now(), payload });
