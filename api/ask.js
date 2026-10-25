@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 
 const MODEL = process.env.NOVA_AI_MODEL || 'openai/gpt-6-luna';
-const GATEWAY_URL = 'https://ai-gateway.vercel.sh/v1/responses';
+const RESPONSES_URL = 'https://ai-gateway.vercel.sh/v1/responses';
+const CHAT_URL = 'https://ai-gateway.vercel.sh/v1/chat/completions';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const RATE_WINDOW_MS = 60 * 60 * 1000;
 const RATE_LIMIT = 15;
@@ -77,7 +78,7 @@ function checkRateLimit(clientId) {
   return { ok: true, remaining: RATE_LIMIT - current.count };
 }
 
-function extractText(data) {
+function extractResponsesText(data) {
   if (typeof data?.output_text === 'string' && data.output_text.trim()) return data.output_text.trim();
   const parts = [];
   for (const item of data?.output || []) {
@@ -88,6 +89,25 @@ function extractText(data) {
     }
   }
   return parts.join('\n\n').trim();
+}
+
+function extractChatText(data) {
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => typeof part === 'string' ? part : (part?.text || part?.content || ''))
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  }
+  return '';
+}
+
+function gatewayError(label, response, data) {
+  const code = clean(data?.error?.code || data?.code || '', 120);
+  const detail = clean(data?.error?.message || data?.message || `Gateway ${response.status}`, 500);
+  return `${label} ${response.status}${code ? ` (${code})` : ''}: ${detail}`;
 }
 
 function instructionsFor(mode, level, topic) {
@@ -135,6 +155,22 @@ function buildInput(mode, question, level, item) {
   return `SOURCE CONTEXT\n${sourceContext}\n\nTASK\nExplain this item at the ${level} level without adding unsupported claims.`;
 }
 
+function usageFromResponses(data) {
+  return data?.usage ? {
+    inputTokens: data.usage.input_tokens ?? null,
+    outputTokens: data.usage.output_tokens ?? null,
+    totalTokens: data.usage.total_tokens ?? null,
+  } : null;
+}
+
+function usageFromChat(data) {
+  return data?.usage ? {
+    inputTokens: data.usage.prompt_tokens ?? null,
+    outputTokens: data.usage.completion_tokens ?? null,
+    totalTokens: data.usage.total_tokens ?? null,
+  } : null;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -177,8 +213,13 @@ export default async function handler(req, res) {
     });
   }
 
+  const instructions = instructionsFor(mode, level, item.topic);
+  const input = buildInput(mode, question, level, item);
+  const maxTokens = mode === 'ask' ? 500 : 650;
+  const failures = [];
+
   try {
-    const gatewayResponse = await fetch(GATEWAY_URL, {
+    const responsesResult = await fetch(RESPONSES_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${authToken}`,
@@ -187,47 +228,83 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: MODEL,
         store: false,
-        instructions: instructionsFor(mode, level, item.topic),
-        input: buildInput(mode, question, level, item),
-        max_output_tokens: mode === 'ask' ? 500 : 650,
+        instructions,
+        input,
+        max_output_tokens: maxTokens,
       }),
       signal: AbortSignal.timeout(25000),
     });
 
-    const data = await gatewayResponse.json().catch(() => ({}));
-    if (!gatewayResponse.ok) {
-      const detail = data?.error?.message || data?.message || `AI Gateway ${gatewayResponse.status}`;
-      throw new Error(detail);
+    const responsesData = await responsesResult.json().catch(() => ({}));
+    if (responsesResult.ok) {
+      const answer = extractResponsesText(responsesData);
+      if (answer) {
+        const payload = {
+          answer,
+          model: responsesData?.model || MODEL,
+          usage: usageFromResponses(responsesData),
+          cached: false,
+          remaining: rate.remaining,
+          rateScope: identity.scope,
+          api: 'responses',
+        };
+        responseCache.set(key, { createdAt: Date.now(), payload });
+        return res.status(200).json(payload);
+      }
+      failures.push('Responses API returned an empty response.');
+    } else {
+      failures.push(gatewayError('Responses API', responsesResult, responsesData));
     }
-
-    const answer = extractText(data);
-    if (!answer) throw new Error('The AI provider returned an empty response.');
-
-    const payload = {
-      answer,
-      model: data?.model || MODEL,
-      usage: data?.usage ? {
-        inputTokens: data.usage.input_tokens ?? null,
-        outputTokens: data.usage.output_tokens ?? null,
-        totalTokens: data.usage.total_tokens ?? null,
-      } : null,
-      cached: false,
-      remaining: rate.remaining,
-      rateScope: identity.scope,
-    };
-
-    responseCache.set(key, { createdAt: Date.now(), payload });
-    if (responseCache.size > 250) {
-      const oldest = [...responseCache.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt).slice(0, 50);
-      oldest.forEach(([oldKey]) => responseCache.delete(oldKey));
-    }
-
-    return res.status(200).json(payload);
   } catch (error) {
-    return res.status(502).json({
-      error: 'NOVA AI could not answer right now.',
-      detail: clean(error?.message || 'Unknown AI error', 500),
-      code: 'AI_UPSTREAM_ERROR',
-    });
+    failures.push(`Responses API network error: ${clean(error?.message || 'Unknown error', 500)}`);
   }
+
+  try {
+    const chatResult = await fetch(CHAT_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          { role: 'system', content: instructions },
+          { role: 'user', content: input },
+        ],
+        max_tokens: maxTokens,
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+
+    const chatData = await chatResult.json().catch(() => ({}));
+    if (chatResult.ok) {
+      const answer = extractChatText(chatData);
+      if (answer) {
+        const payload = {
+          answer,
+          model: chatData?.model || MODEL,
+          usage: usageFromChat(chatData),
+          cached: false,
+          remaining: rate.remaining,
+          rateScope: identity.scope,
+          api: 'chat-completions',
+        };
+        responseCache.set(key, { createdAt: Date.now(), payload });
+        return res.status(200).json(payload);
+      }
+      failures.push('Chat Completions returned an empty response.');
+    } else {
+      failures.push(gatewayError('Chat Completions', chatResult, chatData));
+    }
+  } catch (error) {
+    failures.push(`Chat Completions network error: ${clean(error?.message || 'Unknown error', 500)}`);
+  }
+
+  return res.status(502).json({
+    error: 'NOVA AI could not answer right now.',
+    detail: clean(failures.join(' | '), 1000),
+    code: 'AI_UPSTREAM_ERROR',
+    model: MODEL,
+  });
 }
