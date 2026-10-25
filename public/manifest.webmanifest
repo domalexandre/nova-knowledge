@@ -1,0 +1,20 @@
+{
+  "name": "NOVA Knowledge",
+  "short_name": "NOVA",
+  "description": "Discover research, technology and useful ideas — one idea at a time.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#080b12",
+  "theme_color": "#080b12",
+  "orientation": "portrait-primary",
+  "categories": ["education", "productivity", "news"],
+  "icons": [
+    {
+      "src": "/nova-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
