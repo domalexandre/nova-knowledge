@@ -167,7 +167,9 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...cached.payload, cached: true, remaining: rate.remaining, rateScope: identity.scope });
   }
 
-  const authToken = process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN;
+  const oidcHeader = req.headers['x-vercel-oidc-token'];
+  const runtimeOidcToken = Array.isArray(oidcHeader) ? oidcHeader[0] : oidcHeader;
+  const authToken = process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN || clean(runtimeOidcToken, 12000);
   if (!authToken) {
     return res.status(503).json({
       error: 'NOVA AI is not available in this environment yet.',
