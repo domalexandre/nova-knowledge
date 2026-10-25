@@ -10,6 +10,8 @@ const dedupeItems = (items) => {
   return [...map.values()];
 };
 
+const ACTIVITY_WEIGHT = { open: 1, save: 4, unsave: -2, explain: 3, ask: 5 };
+
 export default function useNovaAccount({
   feed,
   selectedTopics,
@@ -18,6 +20,7 @@ export default function useNovaAccount({
   setSelectedTopics,
   setSaved,
   setSavedItems,
+  setTopicSignals,
 }) {
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(!supabaseConfigured);
@@ -68,12 +71,19 @@ export default function useNovaAccount({
           updated_at: new Date().toISOString(),
         }, { onConflict: 'user_id' });
 
-        const [{ data: remotePrefs, error: prefsError }, { data: remoteSaved, error: savedError }] = await Promise.all([
+        const [prefsResult, savedResult, activityResult] = await Promise.all([
           supabase.from('user_preferences').select('topics').eq('user_id', userId).maybeSingle(),
           supabase.from('saved_items').select('item_id,item,created_at').eq('user_id', userId).order('created_at', { ascending: false }),
+          supabase.from('user_activity').select('topic,action,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(200),
         ]);
-        if (prefsError) throw prefsError;
-        if (savedError) throw savedError;
+
+        if (prefsResult.error) throw prefsResult.error;
+        if (savedResult.error) throw savedResult.error;
+        if (activityResult.error) throw activityResult.error;
+
+        const remotePrefs = prefsResult.data;
+        const remoteSaved = savedResult.data || [];
+        const remoteActivity = activityResult.data || [];
 
         if (remotePrefs?.topics?.length) {
           setSelectedTopics(remotePrefs.topics);
@@ -85,13 +95,13 @@ export default function useNovaAccount({
           }, { onConflict: 'user_id' });
         }
 
-        const remoteItems = (remoteSaved || []).map((row) => row.item).filter(Boolean);
+        const remoteItems = remoteSaved.map((row) => row.item).filter(Boolean);
         const localSnapshots = dedupeItems([
           ...savedItems,
           ...feed.filter((item) => saved.includes(item.id)),
         ]);
 
-        const remoteIds = new Set((remoteSaved || []).map((row) => row.item_id));
+        const remoteIds = new Set(remoteSaved.map((row) => row.item_id));
         const localRowsToMigrate = localSnapshots
           .filter((item) => saved.includes(item.id) && !remoteIds.has(item.id))
           .map((item) => ({ user_id: userId, item_id: item.id, item }));
@@ -103,7 +113,17 @@ export default function useNovaAccount({
 
         const mergedItems = dedupeItems([...remoteItems, ...localSnapshots.filter((item) => saved.includes(item.id))]);
         setSavedItems(mergedItems);
-        setSaved(unique([...(remoteSaved || []).map((row) => row.item_id), ...saved]));
+        setSaved(unique([...remoteSaved.map((row) => row.item_id), ...saved]));
+
+        if (remoteActivity.length && setTopicSignals) {
+          const signals = {};
+          for (const row of remoteActivity) {
+            if (!row.topic) continue;
+            signals[row.topic] = (signals[row.topic] || 0) + (ACTIVITY_WEIGHT[row.action] || 0);
+          }
+          setTopicSignals(signals);
+        }
+
         setCloudState('synced');
       } catch (error) {
         setCloudState('error');
