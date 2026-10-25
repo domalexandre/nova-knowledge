@@ -12,13 +12,17 @@ import {
   Radio,
   Search,
   Sparkles,
+  UserRound,
   X,
   Zap,
 } from 'lucide-react';
 import './styles.css';
 import NovaAssistant from './NovaAssistant.jsx';
+import AccountModal from './AccountModal.jsx';
+import useNovaAccount from './useNovaAccount.js';
 
 const TOPICS = ['Artificial Intelligence', 'Business', 'Finance', 'Technology', 'Science', 'Health', 'Psychology', 'Space'];
+const ACTIVITY_WEIGHT = { open: 1, save: 4, unsave: -2, explain: 3, ask: 5 };
 
 const SEED = [
   {
@@ -151,19 +155,43 @@ const formatDate = (value) => {
   return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' }).format(date);
 };
 
+const dedupeItems = (items) => {
+  const map = new Map();
+  for (const item of items.filter(Boolean)) {
+    if (item?.id) map.set(item.id, item);
+  }
+  return [...map.values()];
+};
+
 function App() {
   const [tab, setTab] = useState('For You');
   const [query, setQuery] = useState('');
   const [selectedTopics, setSelectedTopics] = useState(() => readJSON('nova-topics', ['Artificial Intelligence', 'Technology', 'Business']));
   const [saved, setSaved] = useState(() => readJSON('nova-saved', []));
+  const [savedItems, setSavedItems] = useState(() => readJSON('nova-saved-items', []));
+  const [topicSignals, setTopicSignals] = useState(() => readJSON('nova-topic-signals', {}));
   const [showTopics, setShowTopics] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
   const [feed, setFeed] = useState(SEED);
   const [feedState, setFeedState] = useState({ loading: true, live: false, generatedAt: null, sourceErrors: [] });
   const [assistantItem, setAssistantItem] = useState(null);
   const [assistantMode, setAssistantMode] = useState('explain');
 
+  const account = useNovaAccount({
+    feed,
+    selectedTopics,
+    saved,
+    savedItems,
+    setSelectedTopics,
+    setSaved,
+    setSavedItems,
+    setTopicSignals,
+  });
+
   useEffect(() => localStorage.setItem('nova-topics', JSON.stringify(selectedTopics)), [selectedTopics]);
   useEffect(() => localStorage.setItem('nova-saved', JSON.stringify(saved)), [saved]);
+  useEffect(() => localStorage.setItem('nova-saved-items', JSON.stringify(savedItems)), [savedItems]);
+  useEffect(() => localStorage.setItem('nova-topic-signals', JSON.stringify(topicSignals)), [topicSignals]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -188,24 +216,73 @@ function App() {
   }, []);
 
   const items = useMemo(() => {
-    let next = [...feed];
-    if (tab === 'For You') next.sort((a, b) => (selectedTopics.includes(b.topic) - selectedTopics.includes(a.topic)) || b.score - a.score);
+    let next;
+    if (tab === 'Saved') {
+      next = dedupeItems([
+        ...savedItems,
+        ...feed.filter((item) => saved.includes(item.id)),
+      ]).filter((item) => saved.includes(item.id));
+    } else {
+      next = [...feed];
+    }
+
+    if (tab === 'For You') {
+      const personalScore = (item) => {
+        const interestBoost = selectedTopics.includes(item.topic) ? 120 : 0;
+        const behaviourBoost = Math.max(-10, Math.min(60, topicSignals[item.topic] || 0)) * 4;
+        return interestBoost + behaviourBoost + (item.score || 0);
+      };
+      next.sort((a, b) => personalScore(b) - personalScore(a));
+    }
     if (tab === 'Trending') next.sort((a, b) => (b.score || 0) - (a.score || 0));
     if (tab === 'Latest') next.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
-    if (tab === 'Saved') next = next.filter((item) => saved.includes(item.id));
+
     if (query.trim()) {
       const q = query.toLowerCase();
       next = next.filter((item) => `${item.title} ${item.summary} ${item.topic} ${item.source} ${item.authors}`.toLowerCase().includes(q));
     }
     return next;
-  }, [tab, query, selectedTopics, saved, feed]);
+  }, [tab, query, selectedTopics, saved, savedItems, feed, topicSignals]);
 
-  const toggleSave = (id) => setSaved((current) => current.includes(id) ? current.filter((x) => x !== id) : [...current, id]);
-  const toggleTopic = (topic) => setSelectedTopics((current) => current.includes(topic) ? current.filter((x) => x !== topic) : [...current, topic]);
+  const bumpSignal = (item, action) => {
+    if (!item?.topic) return;
+    const amount = ACTIVITY_WEIGHT[action] || 0;
+    setTopicSignals((current) => ({
+      ...current,
+      [item.topic]: Math.max(-20, Math.min(100, (current[item.topic] || 0) + amount)),
+    }));
+  };
+
+  const toggleSave = (item) => {
+    const shouldSave = !saved.includes(item.id);
+    setSaved((current) => shouldSave ? [...new Set([...current, item.id])] : current.filter((id) => id !== item.id));
+    setSavedItems((current) => shouldSave ? dedupeItems([item, ...current]) : current.filter((savedItem) => savedItem.id !== item.id));
+    bumpSignal(item, shouldSave ? 'save' : 'unsave');
+    account.syncSavedItem(item, shouldSave);
+    account.trackActivity(item, shouldSave ? 'save' : 'unsave');
+  };
+
+  const toggleTopic = (topic) => {
+    const next = selectedTopics.includes(topic)
+      ? selectedTopics.filter((value) => value !== topic)
+      : [...selectedTopics, topic];
+    setSelectedTopics(next);
+    account.syncTopics(next);
+  };
+
   const openAssistant = (item, mode) => {
     setAssistantMode(mode);
     setAssistantItem(item);
+    bumpSignal(item, mode);
+    account.trackActivity(item, mode);
   };
+
+  const openOriginal = (item) => {
+    bumpSignal(item, 'open');
+    account.trackActivity(item, 'open');
+  };
+
+  const accountLabel = account.user?.user_metadata?.display_name?.trim()?.split(/\s+/)[0] || (account.user ? 'Account' : 'Account');
 
   return (
     <div className="app-shell">
@@ -214,9 +291,16 @@ function App() {
           <span className="brand-mark"><Sparkles size={17} /></span>
           <span>NOVA</span>
         </button>
-        <button className="topic-button" onClick={() => setShowTopics(true)}>
-          <Compass size={16} /> Interests
-        </button>
+        <div className="top-actions">
+          <button className="topic-button" onClick={() => setShowTopics(true)}>
+            <Compass size={16} /> Interests
+          </button>
+          <button className={`account-button ${account.user ? 'signed-in' : ''}`} onClick={() => setShowAccount(true)} aria-label="NOVA account">
+            <UserRound size={16} />
+            <span>{accountLabel}</span>
+            {account.user && <span className="account-dot" aria-hidden="true" />}
+          </button>
+        </div>
       </header>
 
       <main>
@@ -226,12 +310,13 @@ function App() {
           <p>Research, technology and useful ideas — translated into language you can actually use.</p>
           <div className="searchbox">
             <Search size={18} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search ideas, topics or sources" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ideas, topics or sources" />
             {query && <button onClick={() => setQuery('')}><X size={16} /></button>}
           </div>
           <div className={`feed-status ${feedState.live ? 'live' : ''}`}>
             {feedState.loading ? <><span className="status-pulse" /> Connecting to live sources…</> : feedState.live ? <><Radio size={13} /> LIVE · arXiv · PubMed · Hacker News</> : <><Clock3 size={13} /> Demo fallback · live sources temporarily unavailable</>}
             <span className="ai-ready-badge"><Sparkles size={10} /> AI ON DEMAND</span>
+            {account.user && <span className="ai-ready-badge"><UserRound size={10} /> PERSONALISED</span>}
           </div>
         </section>
 
@@ -257,7 +342,7 @@ function App() {
             <div className="empty-state">
               <Bookmark size={28} />
               <h3>Nothing here yet</h3>
-              <p>{tab === 'Saved' ? 'Save an idea and it will appear here while it remains in your active feed.' : 'Try another search.'}</p>
+              <p>{tab === 'Saved' ? 'Save an idea and it will stay here, even after the live feed refreshes.' : 'Try another search.'}</p>
             </div>
           ) : items.map((item, index) => (
             <article className="knowledge-card" key={item.id}>
@@ -282,10 +367,10 @@ function App() {
                 <button className="ask-action" onClick={() => openAssistant(item, 'ask')}>
                   <BrainCircuit size={17} /> Ask NOVA
                 </button>
-                <button className="icon-action" onClick={() => toggleSave(item.id)} aria-label="Save">
+                <button className="icon-action" onClick={() => toggleSave(item)} aria-label="Save">
                   {saved.includes(item.id) ? <BookmarkCheck size={19} /> : <Bookmark size={19} />}
                 </button>
-                <a className="read-link" href={item.url} target="_blank" rel="noreferrer">Read original <ChevronRight size={16} /></a>
+                <a className="read-link" href={item.url} target="_blank" rel="noreferrer" onClick={() => openOriginal(item)}>Read original <ChevronRight size={16} /></a>
               </div>
             </article>
           ))}
@@ -294,7 +379,7 @@ function App() {
 
       <footer>
         <div>
-          <span>NOVA · MVP 0.3 · Live sources + AI</span>
+          <span>NOVA · MVP 0.4 · Accounts + personalisation</span>
           <span className="legal-note">PubMed/NCBI content is informational and not medical advice. Copyright may remain with publishers or authors.</span>
         </div>
         <span>Discover. Understand. Build.</span>
@@ -302,11 +387,11 @@ function App() {
 
       {showTopics && (
         <div className="modal-backdrop" onClick={() => setShowTopics(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
             <button className="modal-close" onClick={() => setShowTopics(false)}><X /></button>
             <span className="eyebrow">PERSONALISE YOUR FEED</span>
             <h2>What do you want to learn?</h2>
-            <p>Select the topics NOVA should prioritise for you.</p>
+            <p>Select the topics NOVA should prioritise for you. Your reading behaviour also refines the For You ranking over time.</p>
             <div className="topic-grid">
               {TOPICS.map((topic) => <button key={topic} onClick={() => toggleTopic(topic)} className={selectedTopics.includes(topic) ? 'selected' : ''}>{topic}</button>)}
             </div>
@@ -315,11 +400,14 @@ function App() {
         </div>
       )}
 
+      {showAccount && <AccountModal account={account} onClose={() => setShowAccount(false)} />}
+
       {assistantItem && (
         <NovaAssistant
           item={assistantItem}
           initialMode={assistantMode}
           onClose={() => setAssistantItem(null)}
+          onAIResult={(mode, payload) => account.trackAiUsage(assistantItem, mode, payload)}
         />
       )}
     </div>
