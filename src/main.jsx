@@ -16,6 +16,7 @@ import {
   Zap,
 } from 'lucide-react';
 import './styles.css';
+import NovaAssistant from './NovaAssistant.jsx';
 
 const TOPICS = ['Artificial Intelligence', 'Business', 'Finance', 'Technology', 'Science', 'Health', 'Psychology', 'Space'];
 
@@ -155,11 +156,11 @@ function App() {
   const [query, setQuery] = useState('');
   const [selectedTopics, setSelectedTopics] = useState(() => readJSON('nova-topics', ['Artificial Intelligence', 'Technology', 'Business']));
   const [saved, setSaved] = useState(() => readJSON('nova-saved', []));
-  const [explain, setExplain] = useState(null);
-  const [level, setLevel] = useState('Simple');
   const [showTopics, setShowTopics] = useState(false);
   const [feed, setFeed] = useState(SEED);
   const [feedState, setFeedState] = useState({ loading: true, live: false, generatedAt: null, sourceErrors: [] });
+  const [assistantItem, setAssistantItem] = useState(null);
+  const [assistantMode, setAssistantMode] = useState('explain');
 
   useEffect(() => localStorage.setItem('nova-topics', JSON.stringify(selectedTopics)), [selectedTopics]);
   useEffect(() => localStorage.setItem('nova-saved', JSON.stringify(saved)), [saved]);
@@ -201,11 +202,9 @@ function App() {
 
   const toggleSave = (id) => setSaved((current) => current.includes(id) ? current.filter((x) => x !== id) : [...current, id]);
   const toggleTopic = (topic) => setSelectedTopics((current) => current.includes(topic) ? current.filter((x) => x !== topic) : [...current, topic]);
-
-  const explanation = (item) => {
-    if (level === 'Simple') return `${item.summary} In plain English: ${item.why}`;
-    if (level === 'Professional') return `${item.summary} The practical significance is that ${item.why.charAt(0).toLowerCase()}${item.why.slice(1)} This should still be treated as a signal to investigate rather than a guaranteed real-world outcome.`;
-    return item.expert || `${item.summary} Review the original source, methodology and limitations before relying on the claim.`;
+  const openAssistant = (item, mode) => {
+    setAssistantMode(mode);
+    setAssistantItem(item);
   };
 
   return (
@@ -232,6 +231,7 @@ function App() {
           </div>
           <div className={`feed-status ${feedState.live ? 'live' : ''}`}>
             {feedState.loading ? <><span className="status-pulse" /> Connecting to live sources…</> : feedState.live ? <><Radio size={13} /> LIVE · arXiv · PubMed · Hacker News</> : <><Clock3 size={13} /> Demo fallback · live sources temporarily unavailable</>}
+            <span className="ai-ready-badge"><Sparkles size={10} /> AI ON DEMAND</span>
           </div>
         </section>
 
@@ -276,8 +276,11 @@ function App() {
                 <p>{item.why}</p>
               </div>
               <div className="card-actions">
-                <button className="primary" onClick={() => { setExplain(item); setLevel('Simple'); }}>
+                <button className="primary" onClick={() => openAssistant(item, 'explain')}>
                   <Sparkles size={17} /> Explain
+                </button>
+                <button className="ask-action" onClick={() => openAssistant(item, 'ask')}>
+                  <BrainCircuit size={17} /> Ask NOVA
                 </button>
                 <button className="icon-action" onClick={() => toggleSave(item.id)} aria-label="Save">
                   {saved.includes(item.id) ? <BookmarkCheck size={19} /> : <Bookmark size={19} />}
@@ -291,7 +294,7 @@ function App() {
 
       <footer>
         <div>
-          <span>NOVA · MVP 0.2 · Live sources</span>
+          <span>NOVA · MVP 0.3 · Live sources + AI</span>
           <span className="legal-note">PubMed/NCBI content is informational and not medical advice. Copyright may remain with publishers or authors.</span>
         </div>
         <span>Discover. Understand. Build.</span>
@@ -312,20 +315,12 @@ function App() {
         </div>
       )}
 
-      {explain && (
-        <div className="modal-backdrop" onClick={() => setExplain(null)}>
-          <div className="modal explain-modal" onClick={(e) => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setExplain(null)}><X /></button>
-            <span className="eyebrow"><Sparkles size={14} /> NOVA EXPLAIN</span>
-            <h2>{explain.title}</h2>
-            <p className="modal-source">{explain.source} · {explain.authors} · {formatDate(explain.publishedAt)}</p>
-            <div className="level-tabs">
-              {['Simple', 'Professional', 'Expert'].map((name) => <button key={name} onClick={() => setLevel(name)} className={level === name ? 'selected' : ''}>{name}</button>)}
-            </div>
-            <div className="explanation-text">{explanation(explain)}</div>
-            <p className="disclaimer">NOVA currently explains source metadata and abstracts locally. It does not replace the original paper, peer review, professional advice or source verification. On-demand AI analysis is the next phase.</p>
-          </div>
-        </div>
+      {assistantItem && (
+        <NovaAssistant
+          item={assistantItem}
+          initialMode={assistantMode}
+          onClose={() => setAssistantItem(null)}
+        />
       )}
     </div>
   );
